@@ -80,9 +80,9 @@ review:
 | Triage | strong | domain, claims inventory, search queries |
 | Literature survey | small | builds the context pack (OpenAlex/Crossref/web + your PDFs) |
 | Community scout | small | PubPeer / OpenReview / PREreview signals |
-| Section verifiers | small + vision | math, consistency, claims-vs-evidence, figures |
+| Section verifiers | small + vision | specialized lenses per section: math/theory, statistics/econometrics, prose coherence, literature coherence (+ figures via vision) |
 | Challenger | strong | adversarial re-read; validates/adjusts/drops candidates |
-| Bibliography audit | small | phantom/miscited references, missing key work |
+| Citation audit | small | reference existence + in-text quotation consistency, missing key work |
 | Meta-review | strong | dedupe, severity calibration, overall report |
 | **Review validator** | strong | final gate: quotes verified, severities recalibrated |
 | Assembler | — | anchor resolution (fuzzy + confidence), exports |

@@ -92,20 +92,21 @@ async def test_full_pipeline_e2e(test_config, sample_paper_file, monkeypatch, tm
     # triage(strong) -> survey(small, may fail gracefully) -> verify(small x sections)
     # -> challenge(strong x sections) -> bibliography(small, stubbed)
     # -> meta(strong) -> validate(strong)
-    sections = pipeline._reviewable_sections(
-        await __import__("asyncio").to_thread(
-            __import__(
-                "open_referee.ingestion.readers", fromlist=["ingest_document"]
-            ).ingest_document,
-            sample_paper_file,
-        )
+    doc = await __import__("asyncio").to_thread(
+        __import__("open_referee.ingestion.readers", fromlist=["ingest_document"]).ingest_document,
+        sample_paper_file,
     )
+    sections = pipeline._reviewable_sections(doc)
+    triage = json.loads(triage_json())
+    lenses = pipeline._lenses_for(triage)
+    n_verify = len(sections) * len(lenses)
+
     strong.queue(triage_json())
     small.queue(
         json.dumps({"selected": [], "state_of_the_art_notes": "n/a", "missing_references": []})
     )
-    for title, _ in sections:
-        small.queue(_script_comments(title))
+    for _ in range(n_verify):
+        small.queue(_script_comments("lens"))
     for title, _ in sections:
         strong.queue(_script_challenge(title))
     strong.queue(overall_json())

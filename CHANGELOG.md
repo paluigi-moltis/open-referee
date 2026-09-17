@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+### Changed — specialized referee prompts
+
+- All agents now share an explicit **referee persona** (severe, rigorous, fair
+  — top-journal referee) and a common **severity rubric** (0.8+ only for
+  result-invalidating flaws).
+- Triage additionally classifies `mathematical_density` and
+  `statistical_content` and inventories `novelty_claims`.
+- Verification now runs **specialized lenses per section**, selected by triage:
+  - *math/theory*: statement–proof fit, hidden assumptions, WLOG claims, case
+    coverage, index/dimension bookkeeping, algebra verification, circularity,
+    limiting arguments;
+  - *statistics/econometrics*: identification, design-specific threats
+    (DiD/IV/RDD/panel/event studies), inference (clustering, MHT), data
+    quality, table-vs-text consistency, robustness, overreach;
+  - *prose coherence*: contradictions, cross-reference errors, drifting
+    quantities, definitions, promises kept, logical flow;
+  - *literature coherence*: attribution accuracy vs context-pack evidence,
+    novelty-claim checks, missing engagement with author-supplied work,
+    citation-claim mismatch.
+- Citation audit upgraded to two dimensions: **existence** (verified /
+    year/title/author mismatch / not_found / suspicious) and **quotation
+    consistency** (in-text citation claims vs cited work's abstract), fed by a
+    new in-text citation extractor (author-year, numeric, natbib styles).
+- Meta-reviewer now writes thematic sections ordered by importance, includes a
+  strengths paragraph, and ends with a calibrated recommendation
+  (accept / minor / major / reject).
+- Validator drops unsubstantiated comments ("a fabricated criticism is worse
+  than a missed one"), merges duplicates, and checks the report's
+  recommendation against the severity distribution.
+
 ### Fixed (PR #1 review round)
 
 - **`open-referee serve` production crash**: `create_app()` never set

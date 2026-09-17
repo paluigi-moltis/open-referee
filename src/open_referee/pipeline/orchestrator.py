@@ -199,7 +199,7 @@ class ReviewPipeline:
 
             # 5. verify
             candidates = await self._stage_or_resume(
-                Stage.VERIFY, lambda: self._verify(pool, doc, pack), skip_key="candidates"
+                Stage.VERIFY, lambda: self._verify(pool, doc, pack, triage), skip_key="candidates"
             )
             # 6. challenge
             validated = await self._stage_or_resume(
@@ -407,27 +407,55 @@ class ReviewPipeline:
             out.append(("Full manuscript", doc.full_text()))
         return out
 
-    async def _verify(self, pool: RolePool, doc: Document, pack: ContextPack | None) -> list[dict]:
+    def _lenses_for(self, triage: dict) -> list[tuple[str, str]]:
+        """Select verifier lenses based on triage: (name, system prompt)."""
+        math_density = str(triage.get("mathematical_density", "")).lower()
+        stat_content = str(triage.get("statistical_content", "")).lower()
+        style = str(triage.get("methodological_style", "")).lower()
+
+        lenses: list[tuple[str, str]] = [("prose", prompts.PROSE_VERIFIER_SYSTEM)]
+        if (
+            math_density in ("light", "moderate", "heavy")
+            or "theorem" in style
+            or math_density in ("moderate", "heavy")
+        ):
+            lenses.append(("math", prompts.MATH_VERIFIER_SYSTEM))
+        if stat_content not in ("", "none") or "empirical" in style or "causal" in stat_content:
+            lenses.append(("empirical", prompts.EMPIRICAL_VERIFIER_SYSTEM))
+        # literature coherence always runs: cheap and central to the review
+        lenses.append(("lit", prompts.LIT_VERIFIER_SYSTEM))
+        return lenses
+
+    async def _verify(
+        self, pool: RolePool, doc: Document, pack: ContextPack | None, triage: dict
+    ) -> list[dict]:
         sections = self._reviewable_sections(doc)
+        lenses = self._lenses_for(triage)
         sem = asyncio.Semaphore(self.cfg.review.max_parallel_calls)
         candidates: list[dict] = []
 
-        async def run_section(title: str, text: str):
+        async def run_lens_section(lens_name: str, system: str, title: str, text: str):
             async with sem:
                 user = prompts.VERIFIER_USER.format(
-                    section_title=title,
+                    section_title=f"{title} — {lens_name} lens",
                     context_block=self._pack_for_section(pack),
                     section_text=text[:40_000],
                 )
                 try:
-                    res = await pool.complete_json(ModelRole.SMALL, prompts.VERIFIER_SYSTEM, user)
+                    res = await pool.complete_json(ModelRole.SMALL, system, user)
                 except LLMError as e:
-                    logger.warning("verifier failed on section %s: %s", title, e)
+                    logger.warning("verifier (%s) failed on section %s: %s", lens_name, title, e)
                     return []
-                await self._emit(Stage.VERIFY, StageStatus.RUNNING, f"verified: {title}")
+                await self._emit(
+                    Stage.VERIFY, StageStatus.RUNNING, f"verified [{lens_name}]: {title}"
+                )
                 return res.get("comments", [])
 
-        tasks = [run_section(t, txt) for t, txt in sections]
+        tasks = [
+            run_lens_section(lens, system, t, txt)
+            for (t, txt) in sections
+            for (lens, system) in lenses
+        ]
         results = await asyncio.gather(*tasks)
         for r in results:
             candidates.extend(r)
@@ -499,23 +527,37 @@ class ReviewPipeline:
         return validated
 
     async def _bibliography(self, pool, doc, pack) -> dict:
+        empty = {
+            "entries": [],
+            "in_text_issues": [],
+            "missing_key_references": [],
+        }
         if not doc.references_text:
-            return {"entries": [], "missing_key_references": []}
+            return empty
+        intext = _extract_intext_citations(doc)
         user = prompts.BIBLIOGRAPHY_USER.format(
-            references=doc.references_text[:30_000], context=pack.render(max_items=20)
+            references=doc.references_text[:30_000],
+            intext=intext[:15_000],
+            context=pack.render(max_items=25),
         )
         try:
-            return await pool.complete_json(ModelRole.SMALL, prompts.BIBLIOGRAPHY_SYSTEM, user)
+            result = await pool.complete_json(ModelRole.SMALL, prompts.BIBLIOGRAPHY_SYSTEM, user)
+            result.setdefault("in_text_issues", [])
+            return result
         except LLMError as e:
             logger.warning("bibliography audit failed: %s", e)
-            return {"entries": [], "missing_key_references": []}
+            return empty
 
     async def _meta(self, pool, doc, triage, validated, bib, pack) -> dict:
+        bib_summary = {
+            "entries": bib.get("entries", []),
+            "in_text_issues": bib.get("in_text_issues", []),
+        }
         user = prompts.META_USER.format(
             title=doc.title,
             triage_json=json.dumps(triage)[:4000],
             comments_json=json.dumps(validated, indent=1)[:60_000],
-            bib_summary=json.dumps(bib.get("entries", []))[:6000],
+            bib_summary=json.dumps(bib_summary)[:8000],
             sota_notes=(pack.field_hint or "")[:1500],
         )
         return await pool.complete_json(ModelRole.STRONG, prompts.META_SYSTEM, user)
@@ -592,6 +634,56 @@ class ReviewPipeline:
 
 
 # ------------------------------------------------------------------ anchor --
+
+
+def _extract_intext_citations(doc: Document, max_citations: int = 60) -> str:
+    """Extract in-text citation mentions with claim context for the audit.
+
+    Matches the common author-year styles: (Smith, 2001), Smith (2001),
+    (Smith and Jones, 2001; Doe, 2019), [1], [Smith2001]. For each match,
+    keeps the surrounding sentence as the claim context.
+    """
+    text = doc.full_text()
+    patterns = [
+        # Author (1999) / Author and Other (1999) — runs FIRST so it claims the
+        # full span before the bare-paren pattern can reduce it to "(1999)"
+        r"([A-Z][A-Za-z'’\-]+(?:\s+(?:and|&|et al\.?)\s+[A-Z][A-Za-z'’\-]+)"
+        r"{0,2}\s*\(\d{4}[a-z]?\))",
+        # numeric [1] / [1, 2] / [1-3]
+        r"(\[[0-9][0-9,\s\-–]*\])",
+        # (Author, 1999) / (Author and Other, 1999; Third, 2020)
+        r"\(([^()]{0,80}?\d{4}[a-z]?[^()]{0,80}?)\)",
+        # natbib \citep-style leftovers: Smith2001 / Jones2020
+        r"\b([A-Z][a-z]{2,}\d{2,4})\b",
+    ]
+    hits: list[tuple[str, str]] = []
+    seen_spans: list[tuple[int, int]] = []
+
+    def overlaps(s: int, e: int) -> bool:
+        return any(s < be and e > bs for bs, be in seen_spans)
+
+    for pat in patterns:
+        for m in re.finditer(pat, text):
+            if overlaps(m.start(), m.end()):
+                continue
+            # must contain either a year or a bracket number to count as a citation
+            cite = m.group(0)
+            if not (re.search(r"\d{4}", cite) or cite.startswith("[")):
+                continue
+            sent_lo = max(0, text.rfind(". ", 0, m.start()) + 1)
+            sent_hi = text.find(". ", m.end())
+            if sent_hi == -1:
+                sent_hi = min(len(text), m.end() + 200)
+            claim = " ".join(text[sent_lo:sent_hi].split())[:400]
+            hits.append((cite, claim))
+            seen_spans.append((m.start(), m.end()))
+            if len(hits) >= max_citations:
+                break
+        if len(hits) >= max_citations:
+            break
+    if not hits:
+        return "(no in-text citations detected)"
+    return "\n".join(f"- {cite} :: {claim}" for cite, claim in hits)
 
 
 def _figure_context(doc: Document, fig: Figure, window: int = 30) -> str:

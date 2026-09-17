@@ -49,13 +49,17 @@ def triage_json() -> str:
     return json.dumps(
         {
             "domain": "network science",
-            "paper_type": "article",
+            "language": "en",
+            "paper_type": "theory",
             "main_claims": ["All widgets are stable"],
             "contribution": "A stability theorem for widget networks.",
             "methodological_style": "theory",
             "key_sections": ["3. Main result"],
+            "mathematical_density": "moderate",
+            "statistical_content": "none",
             "search_queries": ["widget network stability"],
             "key_citations": ["Smith, 2001: Classical widgets"],
+            "novelty_claims": [],
         }
     )
 
