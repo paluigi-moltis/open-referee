@@ -324,6 +324,9 @@ def _config_from_form(form, base: Config) -> Config:
         request_timeout_s=base.llm.request_timeout_s,
         max_retries=base.llm.max_retries,
     )
+    depth = s("review_depth", base.review.depth)
+    if depth in ("fast", "standard", "deep"):
+        base.review.depth = depth
     base.review.max_cost_usd = f("review_max_cost_usd", base.review.max_cost_usd)
     base.review.max_parallel_calls = i("review_max_parallel_calls", base.review.max_parallel_calls)
     base.openalex.api_key_env = (

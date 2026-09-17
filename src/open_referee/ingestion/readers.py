@@ -5,7 +5,14 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from open_referee.ingestion.document import Block, BlockType, Document, Figure, Section
+from open_referee.ingestion.document import (
+    Block,
+    BlockType,
+    Document,
+    Figure,
+    Section,
+    TableArtifact,
+)
 
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 _NUMBERED_HEADING_RE = re.compile(
@@ -147,11 +154,14 @@ def _bid(i: int) -> str:
 
 
 def _ingest_pdf(p: Path, *, extract_figures: bool) -> Document:
+    import base64
+
     import fitz  # pymupdf
 
     doc = fitz.open(p)
     lines: list[str] = []
     figures: list[Figure] = []
+    tables: list[TableArtifact] = []
     for pno in range(len(doc)):
         page = doc[pno]
         lines.append(page.get_text("text"))
@@ -162,8 +172,6 @@ def _ingest_pdf(p: Path, *, extract_figures: bool) -> Document:
                 if pix.n - pix.alpha > 3:  # CMYK etc.
                     pix = fitz.Pixmap(fitz.csRGB, pix)
                 data = pix.tobytes("png")
-                import base64
-
                 figures.append(
                     Figure(
                         id=f"fig_p{pno + 1}_{i}",
@@ -171,11 +179,35 @@ def _ingest_pdf(p: Path, *, extract_figures: bool) -> Document:
                         image_data_url="data:image/png;base64," + base64.b64encode(data).decode(),
                     )
                 )
+        # tables: pymupdf finder; keep parsed cells + a rendered region image
+        try:
+            tabs = page.find_tables()
+            for ti, tab in enumerate(tabs.tables, start=1):
+                markdown = _table_to_markdown(tab.extract())
+                bbox = tab.bbox
+                clip = fitz.Rect(bbox)
+                pix = page.get_pixmap(clip=clip, dpi=150)
+                img_url = "data:image/png;base64," + base64.b64encode(pix.tobytes("png")).decode()
+                tables.append(
+                    TableArtifact(
+                        id=f"tbl_p{pno + 1}_{ti}",
+                        page=pno + 1,
+                        markdown=markdown,
+                        image_data_url=img_url,
+                    )
+                )
+        except Exception:
+            pass  # table detection is best-effort; never block ingestion
     raw = "\n".join(lines)
+    n_pages = len(doc)
     doc.close()
     md = _pdf_text_to_markdown(raw)
     d = document_from_markdown(md, source_format="pdf", title_hint=p.stem)
     d.figures = figures
+    d.tables = tables
+    # approximate block->page mapping by proportional position
+    for b in d.blocks:
+        b.page = max(1, min(n_pages, 1 + (b.order * n_pages) // max(1, len(d.blocks))))
     return d
 
 
@@ -271,3 +303,17 @@ def _latex_text_to_markdown(text: str) -> str:
             continue
         out.append(line)
     return "\n".join(out)
+
+
+def _table_to_markdown(cells) -> str:
+    """pymupdf table.extract() cell matrix -> markdown rows (None -> empty)."""
+    if not cells:
+        return ""
+    rows = []
+    for row in cells:
+        vals = ["" if c is None else str(c).replace("\n", " ").replace("|", "\\-") for c in row]
+        rows.append("| " + " | ".join(vals) + " |")
+    if len(rows) >= 1:
+        n_cols = rows[0].count("|") - 1
+        rows.insert(1, "|" + "---|" * n_cols)
+    return "\n".join(rows)

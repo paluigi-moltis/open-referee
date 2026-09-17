@@ -31,6 +31,8 @@ configure, and the full pipeline is inspectable.
 - **Adversarial pipeline** — section verifiers → challenger ("Referee 2") →
   bibliography audit → meta-review → **validation pass** that drops
   unverifiable comments before delivery
+- **Depth presets** — `fast` / `standard` / `deep` (deep ≈ up to 150 claim
+  verifications + every artifact + full defense rounds)
 - **Cost control** — per-call usage ledger, cost estimation from a pricing
   table, hard spend cap per review
 - **PWA** — installable web app (htmx + Alpine, no build step), live SSE
@@ -77,14 +79,18 @@ review:
 
 | Stage | Role | What it does |
 |---|---|---|
-| Triage | strong | domain, claims inventory, search queries |
+| Triage | strong | domain, math/statistics density, novelty claims, search queries |
+| Claim inventory | strong | exhaustive catalogue of atomically checkable claims (theorems+proofs, equations, numbers, table/figure-text pairs, citations, cross-references) |
+| Per-claim verifiers | strong/small | one dedicated call per claim: math re-derivation with an isolated definitions pack, number checks, table/figure-vs-prose, citation support, cross-reference targets |
 | Literature survey | small | builds the context pack (OpenAlex/Crossref/web + your PDFs) |
 | Community scout | small | PubPeer / OpenReview / PREreview signals |
 | Section verifiers | small + vision | specialized lenses per section: math/theory, statistics/econometrics, prose coherence, literature coherence (+ figures via vision) |
 | Whole-paper verifiers | strong | cross-section coherence: abstract vs results, numbers/notation drift across sections, contradictions between results |
+| Artifact verifiers | vision | EVERY figure and EVERY table read from the page image: plotted values vs prose, caption accuracy, significance stars vs SEs, axis/unit errors |
 | Challenger | strong | per-section adversarial re-read + whole-paper challenge: validates/adjusts/drops candidates, hunts missed global weaknesses |
 | Citation audit | small | reference existence + in-text quotation consistency, missing key work |
 | Meta-review | strong | dedupe, severity calibration, overall report |
+| Defense–adjudication | small + strong | per comment: authors' best defense argued, adjudicator upholds/adjusts/dismisses |
 | **Review validator** | strong | final gate: quotes verified, severities recalibrated |
 | Assembler | — | anchor resolution (fuzzy + confidence), exports |
 

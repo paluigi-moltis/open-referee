@@ -226,7 +226,7 @@ def test_whole_paper_challenger_prompt_validates_and_hunts():
 async def test_whole_paper_passes_run_in_pipeline(
     test_config, sample_paper_file, monkeypatch, tmp_path
 ):
-    """Both whole-paper passes fire and their comments reach the candidate pool."""
+    """Whole-paper passes fire and their comments reach the final report."""
     import asyncio
 
     import open_referee.config as cfg_mod
@@ -249,6 +249,7 @@ async def test_whole_paper_passes_run_in_pipeline(
     monkeypatch.setattr(ReviewPipeline, "_literature", _fake_lit)
     monkeypatch.setattr(ReviewPipeline, "_scout", _fake_scout)
     monkeypatch.setattr(ReviewPipeline, "_bibliography", _fake_bib)
+    test_config.llm.max_retries = 0
 
     pipeline = ReviewPipeline(test_config, run_id="wp01")
     pool = await pipeline._ensure_pool()
@@ -258,65 +259,37 @@ async def test_whole_paper_passes_run_in_pipeline(
     doc = await asyncio.to_thread(ingest_document, sample_paper_file)
     sections = pipeline._reviewable_sections(doc)
     triage = json.loads(triage_json())
-    n_verify = len(sections) * len(pipeline._lenses_for(triage))
+    n_lens = len(pipeline._lenses_for(triage))
+
+    wp = {
+        "title": "WP: abstract overclaims",
+        "paragraph_anchor": (
+            "The abstract promises a welfare theorem that the body never establishes."
+        ),
+        "quote": "The abstract promises a welfare theorem",
+        "message": "Abstract claims a proof the body never delivers.",
+        "score": 0.7,
+        "category": "consistency",
+    }
 
     strong.queue(triage_json())
+    strong.queue(json.dumps({"claims": []}))
     small.queue(
         json.dumps({"selected": [], "state_of_the_art_notes": "", "missing_references": []})
     )
-    for _ in range(n_verify):
+    for _ in range(len(sections) * n_lens):
         small.queue(json.dumps({"comments": []}))
-    strong.queue(
-        json.dumps(
-            {
-                "comments": [  # whole-paper verifier
-                    {
-                        "title": "WP: abstract overclaims",
-                        "paragraph_anchor": "We prove that all widgets are stable",
-                        "quote": "We prove that all widgets are stable",
-                        "message": "Abstract claims a proof the body never delivers.",
-                        "score": 0.7,
-                        "category": "consistency",
-                    }
-                ]
-            }
-        )
-    )
+    strong.queue(json.dumps({"comments": [wp]}))  # whole-paper verifier
     for _ in sections:
         strong.queue(json.dumps({"validated": [], "new_comments": []}))
-    strong.queue(
-        json.dumps(
-            {  # whole-paper challenger
-                "validated": [
-                    {
-                        "title": "WP: abstract overclaims",
-                        "paragraph_anchor": "We prove that all widgets are stable",
-                        "quote": "We prove that all widgets are stable",
-                        "message": "Abstract claims a proof the body never delivers.",
-                        "score": 0.7,
-                        "category": "consistency",
-                        "verdict": "kept",
-                        "verdict_reason": "real",
-                    }
-                ],
-                "new_comments": [],
-            }
-        )
-    )
-    strong.queue(json.dumps({"paper_summary": "s", "overall_feedback": "## F", "comments": []}))
+    strong.queue(json.dumps({"validated": [dict(wp, verdict="kept")], "new_comments": []}))
+    small.queue(json.dumps({"defense": "d", "defense_strength": "weak"}))
+    strong.queue(json.dumps({"verdict": "upheld", "comment": wp}))
+    strong.queue(json.dumps({"paper_summary": "s", "overall_feedback": "## F", "comments": [wp]}))
     strong.queue(
         json.dumps(
             {
-                "comments": [
-                    {
-                        "title": "WP: abstract overclaims",
-                        "paragraph_anchor": "We prove that all widgets are stable",
-                        "quote": "We prove that all widgets are stable",
-                        "message": "m",
-                        "score": 0.7,
-                        "category": "consistency",
-                    }
-                ],
+                "comments": [wp],
                 "overall_feedback": "## F",
                 "paper_summary": "s",
                 "validator_notes": "n",

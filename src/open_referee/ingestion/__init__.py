@@ -5,7 +5,32 @@ hash so review comments can anchor to exact text. Figures are extracted as
 images for the vision role.
 """
 
-from open_referee.ingestion.document import Block, BlockType, Document, Figure, Section
+from open_referee.ingestion.artifacts import (
+    build_definitions_pack,
+    extract_tables,
+    extract_theorems,
+)
+from open_referee.ingestion.document import (
+    Block,
+    BlockType,
+    Document,
+    Figure,
+    Section,
+    TableArtifact,
+    TheoremEnvironment,
+)
 from open_referee.ingestion.readers import ingest_document
 
-__all__ = ["Block", "BlockType", "Document", "Figure", "Section", "ingest_document"]
+__all__ = [
+    "Block",
+    "BlockType",
+    "Document",
+    "Figure",
+    "Section",
+    "TableArtifact",
+    "TheoremEnvironment",
+    "ingest_document",
+    "extract_tables",
+    "extract_theorems",
+    "build_definitions_pack",
+]

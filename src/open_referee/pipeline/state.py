@@ -19,6 +19,7 @@ def _runs_dir() -> Path:
 class Stage(str, Enum):
     INGEST = "ingest"
     TRIAGE = "triage"
+    CLAIMS = "claims"
     SURVEY = "survey"
     SCOUT = "scout"
     VERIFY = "verify"

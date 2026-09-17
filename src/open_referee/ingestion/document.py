@@ -29,6 +29,7 @@ class Block(BaseModel):
     section_path: list[str] = Field(default_factory=list)  # e.g. ["3", "Methods"]
     order: int = 0
     content_hash: str = ""
+    page: int | None = None  # 1-based PDF page, when known
 
     def model_post_init(self, __context) -> None:  # noqa: N805
         if not self.content_hash:
@@ -41,6 +42,32 @@ class Figure(BaseModel):
     image_data_url: str | None = None
     caption: str | None = None
     caption_block_id: str | None = None
+
+
+class TableArtifact(BaseModel):
+    """A table extracted for dedicated verification (text + optional image)."""
+
+    id: str
+    page: int | None = None
+    markdown: str | None = None  # parsed cell content, when extraction worked
+    image_data_url: str | None = None  # page-region render for the vision role
+    caption: str | None = None
+    caption_block_id: str | None = None
+
+
+class TheoremEnvironment(BaseModel):
+    """A theorem/lemma/proposition/definition/corollary with optional proof.
+
+    Isolated so the math verifiers see the statement, its proof, and ONLY the
+    definitions it uses — not the whole section.
+    """
+
+    kind: str  # theorem | lemma | proposition | corollary | definition
+    label: str | None = None  # "Theorem 1", "Lemma 2.3"
+    statement: str
+    proof: str | None = None
+    statement_block_id: str | None = None
+    proof_block_id: str | None = None
 
 
 class Section(BaseModel):
@@ -56,6 +83,8 @@ class Document(BaseModel):
     blocks: list[Block] = Field(default_factory=list)
     sections: list[Section] = Field(default_factory=list)
     figures: list[Figure] = Field(default_factory=list)
+    tables: list[TableArtifact] = Field(default_factory=list)
+    theorems: list[TheoremEnvironment] = Field(default_factory=list)
     references_text: str | None = None  # raw bibliography section text if detected
 
     def full_text(self) -> str:

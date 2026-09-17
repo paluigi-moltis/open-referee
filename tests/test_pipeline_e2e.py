@@ -102,9 +102,31 @@ async def test_full_pipeline_e2e(test_config, sample_paper_file, monkeypatch, tm
     n_verify = len(sections) * len(lenses)
 
     strong.queue(triage_json())
+    # CLAIMS stage (strong)
+    strong.queue(
+        json.dumps(
+            {
+                "claims": [
+                    {
+                        "id": "cl01",
+                        "type": "theorem_proof",
+                        "importance": "central",
+                        "components": {
+                            "statement": "Theorem 1. Every widget network is stable.",
+                            "proof": "(none given)",
+                        },
+                        "anchor": "Theorem 1. Every widget network is stable.",
+                        "section": "3. Main result",
+                    },
+                ]
+            }
+        )
+    )
     small.queue(
         json.dumps({"selected": [], "state_of_the_art_notes": "n/a", "missing_references": []})
     )
+    # per-claim worker (small for cross_reference would be small; theorem_proof -> strong)
+    strong.queue(_script_comments("claim"))
     for _ in range(n_verify):
         small.queue(_script_comments("lens"))
     # whole-paper coherence pass (strong) happens AFTER section lenses
@@ -113,6 +135,29 @@ async def test_full_pipeline_e2e(test_config, sample_paper_file, monkeypatch, tm
         strong.queue(_script_challenge(title))
     # whole-paper challenge (strong) happens AFTER section challengers
     strong.queue(_script_challenge("whole-paper"))
+    # defense gates: each surviving comment consumes small(defense)+strong(adjudication).
+    # count comments produced by the scripted challenge responses:
+    # per section: 1 validated + 1 new; whole-paper: 1 validated; claim: 1.
+    n_sections = len(sections)
+    n_defended = n_sections * 2 + 1 + 1  # + wp + claim comment
+    for i in range(n_defended):
+        small.queue(json.dumps({"defense": "weak", "defense_strength": "weak"}))
+        strong.queue(
+            json.dumps(
+                {
+                    "verdict": "upheld",
+                    "reason": "ok",
+                    "comment": {
+                        "title": f"upheld-{i}",
+                        "paragraph_anchor": "Theorem 1. Every widget network is stable.",
+                        "quote": "Every widget network is stable",
+                        "message": "State and prove the theorem or cite a source.",
+                        "score": 0.75,
+                        "category": "math",
+                    },
+                }
+            )
+        )
     strong.queue(overall_json())
     strong.queue(validator_json())
 

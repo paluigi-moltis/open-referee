@@ -141,10 +141,45 @@ class PeerReviewSourcesConfig(BaseModel):
     extra_sites: list[str] = Field(default_factory=list)
 
 
+class DepthPreset(BaseModel):
+    """Call-budget preset. 'deep' approaches the hundreds-of-calls regime of
+    hosted deep-review tools; 'fast' trades depth for cost/latency."""
+
+    max_claims: int = 60
+    per_section_lenses: bool = True
+    whole_paper_passes: bool = True
+    defense_round: bool = True
+    max_artifacts: int = 12
+
+
 class ReviewConfig(BaseModel):
     max_cost_usd: float = 10.0
     max_parallel_calls: int = 8
     max_user_literature_docs: int = 10
+    depth: str = "standard"  # fast | standard | deep
+
+    def depth_preset(self) -> DepthPreset:
+        presets = {
+            "fast": DepthPreset(
+                max_claims=20,
+                per_section_lenses=False,
+                whole_paper_passes=True,
+                defense_round=False,
+                max_artifacts=6,
+            ),
+            "standard": DepthPreset(),
+            "deep": DepthPreset(
+                max_claims=150,
+                per_section_lenses=True,
+                whole_paper_passes=True,
+                defense_round=True,
+                max_artifacts=25,
+            ),
+        }
+        key = self.depth.lower().strip()
+        if key not in presets:
+            raise ValueError(f"Unknown depth preset '{self.depth}' (fast|standard|deep)")
+        return presets[key]
 
 
 class ServerConfig(BaseModel):

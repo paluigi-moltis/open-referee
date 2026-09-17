@@ -167,6 +167,12 @@ class ReviewPipeline:
             await self._emit(Stage.INGEST, StageStatus.RUNNING)
             doc = await asyncio.to_thread(ingest_document, paper_path)
             self._ingested_doc = doc
+            # artifacts: theorem environments + markdown tables (PDF ones come
+            # from the reader)
+            from open_referee.ingestion import extract_tables, extract_theorems
+
+            doc.theorems = await asyncio.to_thread(extract_theorems, doc)
+            doc.tables = doc.tables + await asyncio.to_thread(extract_tables, doc)
             lit_docs = [
                 await asyncio.to_thread(ingest_document, p)
                 for p in (literature_paths or [])[: self.cfg.review.max_user_literature_docs]
@@ -187,6 +193,11 @@ class ReviewPipeline:
             queries = triage.get("search_queries", [])[:8]
             key_citations = triage.get("key_citations", [])
 
+            # 2b. claim inventory (atomic checkable claims) + artifact/theorem extraction
+            claims = await self._stage_or_resume(
+                Stage.CLAIMS, lambda: self._claim_inventory(pool, doc, triage), skip_key="claims"
+            )
+
             # 3+4. literature survey + community scout (concurrent)
             pack = await self._stage_or_resume(
                 Stage.SURVEY,
@@ -197,9 +208,11 @@ class ReviewPipeline:
                 Stage.SCOUT, lambda: self._scout(pool, doc.title, key_citations, pack)
             )
 
-            # 5. verify
+            # 5. verify: per-claim workers + section lenses (by depth) + artifacts + whole-paper
             candidates = await self._stage_or_resume(
-                Stage.VERIFY, lambda: self._verify(pool, doc, pack, triage), skip_key="candidates"
+                Stage.VERIFY,
+                lambda: self._verify(pool, doc, pack, triage, claims),
+                skip_key="candidates",
             )
             # 6. challenge
             validated = await self._stage_or_resume(
@@ -322,6 +335,13 @@ class ReviewPipeline:
         user = prompts.TRIAGE_USER.format(title=doc.title, manuscript=self._manuscript_trunc(doc))
         return await pool.complete_json(ModelRole.STRONG, prompts.TRIAGE_SYSTEM, user)
 
+    async def _claim_inventory(self, pool: RolePool, doc: Document, triage: dict) -> list[dict]:
+        from open_referee.pipeline.claims import run_claim_inventory
+
+        claims = await run_claim_inventory(pool, doc, triage, self.cfg)
+        await self._emit(Stage.CLAIMS, StageStatus.RUNNING, f"{len(claims)} claims catalogued")
+        return claims
+
     async def _literature(self, pool, doc, triage, queries, key_citations, lit_docs) -> ContextPack:
         pack = ContextPack(paper_title=doc.title, field_hint=triage.get("domain"))
         pack.user_docs = [d.title for d in lit_docs]
@@ -427,12 +447,26 @@ class ReviewPipeline:
         return lenses
 
     async def _verify(
-        self, pool: RolePool, doc: Document, pack: ContextPack | None, triage: dict
+        self,
+        pool: RolePool,
+        doc: Document,
+        pack: ContextPack | None,
+        triage: dict,
+        claims: list[dict] | None = None,
     ) -> list[dict]:
-        sections = self._reviewable_sections(doc)
-        lenses = self._lenses_for(triage)
-        sem = asyncio.Semaphore(self.cfg.review.max_parallel_calls)
+        from open_referee.pipeline.claims import verify_artifacts, verify_claims
+
+        preset = self.cfg.review.depth_preset()
         candidates: list[dict] = []
+
+        # per-claim verification workers (the primary engine)
+        if claims:
+            await self._emit(Stage.VERIFY, StageStatus.RUNNING, "per-claim verification")
+            candidates.extend(await verify_claims(self, pool, doc, claims, self.cfg))
+
+        sections = self._reviewable_sections(doc)
+        lenses = self._lenses_for(triage) if preset.per_section_lenses else []
+        sem = asyncio.Semaphore(self.cfg.review.max_parallel_calls)
 
         async def run_lens_section(lens_name: str, system: str, title: str, text: str):
             async with sem:
@@ -460,12 +494,15 @@ class ReviewPipeline:
         for r in results:
             candidates.extend(r)
 
-        # vision pass on figures (if vision role configured + figures exist)
-        if ModelRole.VISION in pool.providers and doc.figures:
-            fig_comments = await self._verify_figures(pool, doc)
-            candidates.extend(fig_comments)
+        # artifact verification: ALL figures and ALL tables vs prose (vision role)
+        if ModelRole.VISION in pool.providers and (doc.figures or doc.tables):
+            await self._emit(Stage.VERIFY, StageStatus.RUNNING, "artifact verification")
+            art_comments = await verify_artifacts(self, pool, doc, self.cfg)
+            candidates.extend(art_comments)
 
         # whole-paper pass: cross-section coherence (strong model, full text)
+        if not preset.whole_paper_passes:
+            return candidates
         try:
             await self._emit(Stage.VERIFY, StageStatus.RUNNING, "whole-paper coherence pass")
             wp_user = prompts.WHOLE_PAPER_VERIFIER_USER.format(
@@ -483,32 +520,6 @@ class ReviewPipeline:
         except LLMError as e:
             logger.warning("whole-paper verifier failed: %s", e)
         return candidates
-
-    async def _verify_figures(self, pool: RolePool, doc: Document) -> list[dict]:
-        out: list[dict] = []
-        provider = pool.providers[ModelRole.VISION]
-        spec = pool.specs[ModelRole.VISION]
-        for fig in doc.figures[:12]:
-            if not fig.image_data_url:
-                continue
-            context = _figure_context(doc, fig)[:8000]
-            user = prompts.FIGURE_USER.format(
-                title=doc.title, page=fig.page or "?", context=context
-            )
-            await pool.ledger.check_budget(spec, 4000, 1500)
-            messages = [
-                ChatMessage(role="system", content=prompts.FIGURE_SYSTEM),
-                ChatMessage(role="user", content=user, images=[fig.image_data_url]),
-            ]
-            try:
-                resp = await provider.complete(messages, json_mode=True)
-                await pool.ledger.record(spec, "vision", resp)
-                from open_referee.providers.adapters import extract_json
-
-                out.extend(extract_json(resp.text).get("comments", []))
-            except (LLMError, json.JSONDecodeError) as e:
-                logger.warning("figure review failed for %s: %s", fig.id, e)
-        return out
 
     async def _challenge(self, pool, doc, pack, candidates: list[dict]) -> list[dict]:
         sections = self._reviewable_sections(doc)
@@ -571,6 +582,11 @@ class ReviewPipeline:
             await self._emit(Stage.CHALLENGE, StageStatus.RUNNING, "whole-paper challenge done")
         except LLMError as e:
             logger.warning("whole-paper challenger failed: %s", e)
+
+        # defense-adjudication quality gate (per comment, standard/deep only)
+        from open_referee.pipeline.claims import defense_round
+
+        validated = await defense_round(self, pool, doc, validated, self.cfg)
         return validated
 
     async def _bibliography(self, pool, doc, pack) -> dict:

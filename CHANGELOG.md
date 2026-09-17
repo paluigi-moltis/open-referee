@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+### Added — verification-mechanics rework (decomposition approach)
+
+- **Claim inventory stage** (strong model): exhaustive catalogue of
+  atomically checkable claims — theorem/proof pairs, equations, numerical
+  statements, table/figure–text pairs, citation–claim pairs, cross
+  references, assumption uses — each with verbatim components and anchors.
+- **Per-claim verification workers**: one dedicated LLM call per claim
+  (strong model re-derives math/theory; small model handles mechanical
+  checks), each with an isolated *definitions pack* built from extracted
+  theorem environments (statement + only the definitions its symbols match)
+  instead of whole-section context.
+- **Theorem/proof extraction**: theorem environments parsed out of the
+  document and paired with their proofs.
+- **Table extraction**: PDF tables via pymupdf `find_tables` (parsed cells +
+  rendered region image) and markdown pipe tables; block→page mapping.
+- **Artifact verification**: EVERY figure and EVERY table verified by the
+  vision model against the prose passages mentioning it — plotted values vs
+  claims, caption accuracy, significance stars vs reported SEs (t-ratios
+  recomputed where possible), axis/unit errors, internal table consistency.
+- **Defense–adjudication gate**: each surviving comment gets an authors'
+  defense (small model) and an adjudication (strong model) that
+  upholds/adjusts/dismisses and recalibrates severity — precision-first.
+- **Depth presets** (`fast`/`standard`/`deep`) controlling claim budgets,
+  lenses, whole-paper passes, defense rounds, artifact caps; selector in the
+  settings UI.
+- CLAIMS stage is resumable like all others.
+
+(Evaluation against a reference corpus happens offline in a separate
+private harness; not part of this repository.)
+
 ### Added — whole-paper review passes
 
 Two new passes ensure consistency *across* sections (single-section lenses

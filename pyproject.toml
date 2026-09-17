@@ -74,6 +74,7 @@ ignore = ["UP042"]  # (str, Enum) kept for 3.11 compatibility & pydantic behavio
 "src/open_referee/server/app.py" = ["B008"]
 # pydantic model defaults calling constructors is intentional
 "src/open_referee/config/__init__.py" = ["B008"]
+"scripts/*" = ["E402"]
 
 [tool.black]
 line-length = 100
