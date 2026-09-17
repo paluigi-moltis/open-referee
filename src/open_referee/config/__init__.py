@@ -128,7 +128,7 @@ class SearchConfig(BaseModel):
         for name in self.order:
             cfg = by_name.get(name.strip().lower())
             if cfg and cfg.enabled and (cfg.api_key_env is None or cfg.resolved_api_key()):
-                out.append(cfg and name.strip().lower())
+                out.append(name.strip().lower())
         return out
 
 
@@ -145,7 +145,6 @@ class ReviewConfig(BaseModel):
     max_cost_usd: float = 10.0
     max_parallel_calls: int = 8
     max_user_literature_docs: int = 10
-    language: str = "en"
 
 
 class ServerConfig(BaseModel):

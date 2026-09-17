@@ -54,11 +54,16 @@ class RunState(BaseModel):
     literature_paths: list[str] = Field(default_factory=list)
     stages: dict[str, StageStatus] = Field(default_factory=dict)
     artifacts: dict[str, Any] = Field(default_factory=dict)  # stage -> JSON-able artifact
-    events: list[StageEvent] = Field(default_factory=list, exclude=True)
+    # events are part of the persisted state so finished runs can replay them
+    events: list[StageEvent] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     status: str = "running"  # running | completed | failed
     error: str | None = None
+
+    def model_post_init(self, __context) -> None:
+        # normalize stage dict entries back to StageStatus after JSON round-trip
+        self.stages = {k: StageStatus(v) for k, v in self.stages.items()}
 
     def set_stage(self, stage: Stage, status: StageStatus) -> None:
         self.stages[stage.value] = status

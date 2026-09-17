@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from open_referee.config import Config, ModelRole
-from open_referee.ingestion import Document, ingest_document
+from open_referee.ingestion import Document, Figure, ingest_document
 from open_referee.literature import (
     ContextPack,
     CrossrefClient,
@@ -50,7 +50,6 @@ def _runs_dir() -> Path:
     return DEFAULT_CONFIG_DIR / "runs"
 
 
-SECTIONS_PER_VERIFIER_CHUNK = 1
 MAX_CITATION_SCANS = 6
 
 
@@ -72,8 +71,6 @@ class RolePool:
             role_cfg = cfg.llm.role(role)
             pool.providers[role] = build_provider(cfg.llm, role_cfg)
             pcfg = cfg.llm.providers[role_cfg.provider]
-            from open_referee.providers.base import ModelSpec
-
             pool.specs[role] = ModelSpec(
                 provider_name=role_cfg.provider,
                 provider_type=pcfg.type.value,
@@ -92,7 +89,9 @@ class RolePool:
         provider = self.providers[role]
         spec = self.specs[role]
         est_in = (len(system) + len(user)) // 3
-        est_out = spec.max_tokens // 2
+        # rough output estimate: proportional to input, bounded — avoids
+        # pre-charging max_tokens/2 on every call and tripping the cap early
+        est_out = min(spec.max_tokens, max(1_000, est_in // 4))
         await self.ledger.check_budget(spec, est_in, est_out)
         messages = [
             ChatMessage(role="system", content=system),
@@ -167,6 +166,7 @@ class ReviewPipeline:
             # 1. ingest
             await self._emit(Stage.INGEST, StageStatus.RUNNING)
             doc = await asyncio.to_thread(ingest_document, paper_path)
+            self._ingested_doc = doc
             lit_docs = [
                 await asyncio.to_thread(ingest_document, p)
                 for p in (literature_paths or [])[: self.cfg.review.max_user_literature_docs]
@@ -230,11 +230,36 @@ class ReviewPipeline:
             await self._emit(Stage.ASSEMBLE, StageStatus.DONE, "report ready")
             return report
         except BudgetExceeded as e:
+            # Drain gracefully: assemble a partial report from whatever the
+            # pipeline managed to produce before the spend cap tripped.
             if state:
                 state.status = "failed"
                 state.error = str(e)
                 state.save()
             await self._emit(Stage.ASSEMBLE, StageStatus.FAILED, f"budget cap reached: {e}")
+            doc: Document | None = getattr(self, "_ingested_doc", None)
+            if doc is not None and state is not None:
+                try:
+                    draft = state.artifacts.get("draft_review")
+                    if not isinstance(draft, dict):
+                        draft = {}
+                    draft.setdefault("paper_summary", "")
+                    draft.setdefault("overall_feedback", "")
+                    draft.setdefault("comments", [])
+                    draft.setdefault(
+                        "validator_notes",
+                        f"Partial report: the run stopped early ({e}). "
+                        "Stages completed: "
+                        + ", ".join(
+                            k
+                            for k, v in (state.stages.items() if state else {})
+                            if v.value == "done"
+                        ),
+                    )
+                    report = await self._assemble(draft, doc)
+                    return report
+                except Exception:
+                    logger.exception("partial-report assembly failed")
             raise
         except Exception as e:
             if state:
@@ -301,8 +326,11 @@ class ReviewPipeline:
         pack = ContextPack(paper_title=doc.title, field_hint=triage.get("domain"))
         pack.user_docs = [d.title for d in lit_docs]
         items: list = []
-        async with OpenAlexClient(self.cfg.openalex) as oa, CrossrefClient(self.cfg.crossref) as cr:
-            router = SearchRouter(self.cfg.search)
+        async with (
+            OpenAlexClient(self.cfg.openalex) as oa,
+            CrossrefClient(self.cfg.crossref) as cr,
+            SearchRouter(self.cfg.search) as router,
+        ):
             try:
                 for q in queries:
                     items.extend(await oa.search_works(q, limit=5))
@@ -321,34 +349,38 @@ class ReviewPipeline:
                         items.append(
                             _hit_to_item(hit, why="Web result (recent or non-scholarly source)")
                         )
-            finally:
-                await router.close()
-        # dedupe by normalized title
-        seen: set[str] = set()
-        for it in items:
-            key = re.sub(r"\W+", "", it.title.lower())[:80]
-            if key and key not in seen:
-                seen.add(key)
-                pack.items.append(it)
-        # surveyor refines relevance + missing refs (small role)
-        try:
-            survey = await pool.complete_json(
-                ModelRole.SMALL, prompts.SURVEY_SYSTEM, pack.render(max_items=30)
-            )
-            for sel in survey.get("selected", []):
-                idx = sel.get("index")
-                if isinstance(idx, int) and 1 <= idx <= len(pack.items):
-                    pack.items[idx - 1].why_relevant = sel.get("why_relevant")
-            for m in survey.get("missing_references", [])[:5]:
-                extra = await cr.lookup(m.get("title", "")) if m.get("title") else None
-                if extra:
-                    extra.why_relevant = m.get("why_important")
-                    pack.items.append(extra)
-            pack.field_hint = (pack.field_hint or "") + (
-                f" — {survey.get('state_of_the_art_notes', '')}"[:400]
-            )
-        except LLMError as e:
-            logger.warning("surveyor stage degraded: %s", e)
+            except Exception as e:
+                # literature enrichment is best-effort; never fail the run for it
+                logger.warning("literature collection degraded: %s", e)
+            # dedupe by normalized title
+            seen: set[str] = set()
+            for it in items:
+                key = re.sub(r"\W+", "", it.title.lower())[:80]
+                if key and key not in seen:
+                    seen.add(key)
+                    pack.items.append(it)
+            # surveyor refines relevance + missing refs (small role) — still inside
+            # the client contexts so Crossref lookups below remain valid
+            try:
+                survey = await pool.complete_json(
+                    ModelRole.SMALL, prompts.SURVEY_SYSTEM, pack.render(max_items=30)
+                )
+                for sel in survey.get("selected", []):
+                    idx = sel.get("index")
+                    if isinstance(idx, int) and 1 <= idx <= len(pack.items):
+                        pack.items[idx - 1].why_relevant = sel.get("why_relevant")
+                for m in survey.get("missing_references", [])[:5]:
+                    extra = await cr.lookup(m.get("title", "")) if m.get("title") else None
+                    if extra:
+                        extra.why_relevant = m.get("why_important")
+                        pack.items.append(extra)
+                pack.field_hint = (pack.field_hint or "") + (
+                    f" — {survey.get('state_of_the_art_notes', '')}"[:400]
+                )
+            except (LLMError, BudgetExceeded):
+                raise
+            except Exception as e:
+                logger.warning("surveyor stage degraded: %s", e)
         return pack
 
     async def _scout(self, pool, title: str, key_citations: list, pack: ContextPack) -> None:
@@ -413,7 +445,7 @@ class ReviewPipeline:
         for fig in doc.figures[:12]:
             if not fig.image_data_url:
                 continue
-            context = "\n".join(b.text for b in doc.blocks[-60:])[:8000]
+            context = _figure_context(doc, fig)[:8000]
             user = prompts.FIGURE_USER.format(
                 title=doc.title, page=fig.page or "?", context=context
             )
@@ -560,6 +592,26 @@ class ReviewPipeline:
 
 
 # ------------------------------------------------------------------ anchor --
+
+
+def _figure_context(doc: Document, fig: Figure, window: int = 30) -> str:
+    """Text around a figure: prefers the caption block, else blocks near the
+    figure's page (approximated by proportional position in the block list)."""
+    if fig.caption_block_id:
+        for i, b in enumerate(doc.blocks):
+            if b.id == fig.caption_block_id:
+                lo, hi = max(0, i - window // 2), min(len(doc.blocks), i + window // 2)
+                return "\n".join(b.text for b in doc.blocks[lo:hi])
+    if len(doc.blocks) <= window:
+        return doc.full_text()
+    # pages are 1-based; approximate block index proportionally
+    if fig.page:
+        frac = (fig.page - 1) / max(1, fig.page)  # crude; falls back to middle
+        center = min(len(doc.blocks) - window, int(frac * (len(doc.blocks) - window)))
+        center = max(0, center)
+    else:
+        center = len(doc.blocks) // 2
+    return "\n".join(b.text for b in doc.blocks[center : center + window])
 
 
 def _norm(t: str) -> str:

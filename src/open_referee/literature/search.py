@@ -30,6 +30,12 @@ class SearchRouter:
         self.cfg = cfg
         self._http = httpx.AsyncClient(timeout=30.0)
 
+    async def __aenter__(self) -> SearchRouter:
+        return self
+
+    async def __aexit__(self, *exc) -> None:
+        await self.close()
+
     async def close(self) -> None:
         await self._http.aclose()
 

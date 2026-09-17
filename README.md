@@ -94,7 +94,7 @@ are persisted after every step.
 
 ```bash
 uv sync --extra dev
-uv run pytest -q        # 28 tests incl. full-pipeline e2e with a FakeProvider
+uv run pytest -q        # 45 tests incl. full-pipeline e2e + regression suite
 uv run ruff check src tests
 uv run black --check src tests
 ```

@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
 from open_referee.config import Config, LLMConfig, ProviderConfig, RoleConfig
 from open_referee.ingestion.readers import document_from_markdown
@@ -136,3 +137,23 @@ def test_config() -> Config:
     )
     cfg.review.max_cost_usd = 100.0
     return cfg
+
+
+@pytest.fixture
+def client_with_tmp_config(tmp_path, monkeypatch):
+    """TestClient against a tmp config dir, incl. a hand-edited custom provider."""
+    import yaml
+
+    import open_referee.server.app as app_mod
+
+    monkeypatch.setattr(app_mod, "DEFAULT_CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(app_mod, "DEFAULT_CONFIG_PATH", tmp_path / "config.yaml")
+    monkeypatch.setattr(app_mod, "UPLOAD_DIR", tmp_path / "uploads")
+    (tmp_path / "config.yaml").write_text(
+        yaml.safe_dump(
+            {"llm": {"providers": {"mycustom": {"type": "ollama", "base_url": "http://x:11434"}}}}
+        )
+    )
+    app = app_mod.create_app()
+    app.state.config_path = tmp_path / "config.yaml"
+    return TestClient(app)

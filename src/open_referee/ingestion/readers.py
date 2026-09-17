@@ -41,7 +41,7 @@ def _ingest_markdown(p: Path) -> Document:
 def document_from_markdown(text: str, *, source_format: str, title_hint: str = "") -> Document:
     blocks: list[Block] = []
     sections: list[Section] = []
-    current_section: list[str] = []
+    current_section: list[str] = []  # hierarchical path, e.g. ["2", "2.3 Methods"]
     section_start = 0
     current_title = title_hint or "Untitled"
     doc_title = title_hint or "Untitled"
@@ -58,7 +58,7 @@ def document_from_markdown(text: str, *, source_format: str, title_hint: str = "
             if blocks and (blocks[-1].order - section_start) > 0:
                 sections.append(
                     Section(
-                        path=list(current_section),
+                        path=list(current_section) or [current_title],
                         title=current_title,
                         start_block=section_start,
                         end_block=len(blocks),
@@ -79,7 +79,7 @@ def document_from_markdown(text: str, *, source_format: str, title_hint: str = "
                     )
                 )
                 continue
-            current_section = title
+            current_section = [title]
             current_title = title
             section_start = len(blocks)
             blocks.append(
