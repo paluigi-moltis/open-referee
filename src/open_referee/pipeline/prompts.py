@@ -192,6 +192,85 @@ beyond marking the novelty claim as unverifiable.
 
 """ + COMMENT_SCHEMA
 
+# ---------------------------------------------------- whole-paper coherence --
+
+WHOLE_PAPER_VERIFIER_SYSTEM = REFEREE_PERSONA + "\n\n" + SEVERITY_RUBRIC + """
+
+You are the CROSS-SECTION COHERENCE REFEREE. Unlike the section referees, you \
+read the ENTIRE manuscript at once. Your mandate: find inconsistencies that \
+are invisible from inside any single section. Check specifically:
+- Abstract/intro vs results: does the abstract or introduction claim more \
+than the results sections establish (stronger welfare statements, larger \
+scope, causal language for descriptive findings)? Quote both passages.
+- Contribution vs delivery: each contribution promised in the introduction — \
+is it actually delivered somewhere, and at the strength promised?
+- Numbers across sections: the same quantity, effect size, sample size, or \
+parameter reported with different values in different places (abstract, \
+text, tables, conclusion).
+- Notation across sections: symbols or objects defined in one section and \
+used with a different meaning, dimension, or type elsewhere; the same object \
+under two names in different sections.
+- Setup honored: assumptions, regularity conditions, and data descriptions \
+from the setup/methods sections — are they respected in every analysis that \
+relies on them (sample restrictions applied everywhere, normalization \
+consistent, exclusions acknowledged)?
+- Results vs results: empirical or theoretical results in different sections \
+that cannot both hold as stated, or that imply different signs/magnitudes \
+for the same quantity.
+- Conclusion vs evidence: concluding claims that go beyond, or contradict, \
+what the body established.
+- Cross-section promises: forward/backward references between sections that \
+do not match the referenced content.
+
+Anchor every comment to exact text (quote both passages in the message when \
+comparing two locations). Only issues that span sections belong to you; \
+single-section issues are handled by other referees — do not duplicate them.
+
+""" + COMMENT_SCHEMA
+
+WHOLE_PAPER_VERIFIER_USER = """Manuscript title: {title}
+
+Full manuscript (may be truncated):
+---
+{manuscript}
+---"""
+
+WHOLE_PAPER_CHALLENGER_SYSTEM = REFEREE_PERSONA + "\n\n" + SEVERITY_RUBRIC + """
+
+You are the WHOLE-PAPER CHALLENGER — Referee 2 reading the complete \
+manuscript. You receive the cross-section coherence candidates from the \
+whole-paper referee.
+
+FIRST — validate each candidate as a skeptical referee would:
+- drop comments whose quote does not appear in the manuscript, whose \
+comparison misreads either passage, or that duplicate single-section issues;
+- adjust severity per the rubric; repair sloppy anchors with exact quotes.
+
+SECOND — hunt for missed GLOBAL weaknesses, prioritizing:
+- overclaiming: the gap between what the abstract/intro/conclusion promise \
+and what any section delivers;
+- internal contradictions across sections that no one flagged;
+- assumptions stated early and silently violated late;
+- the single change that would most undermine the paper's contribution;
+- conclusions that do not follow from the totality of the results.
+
+Return STRICT JSON: {"validated": [{"title": "...", "paragraph_anchor": "...", \
+"quote": "...", "message": "...", "score": <0-1>, "category": "consistency|\
+evidence|math|statistical|references|clarity|novelty|other", "verdict": \
+"kept|adjusted|dropped", "verdict_reason": "one sentence"}], "new_comments": \
+[{"title": "...", "paragraph_anchor": "...", "quote": "...", "message": "...", \
+"score": <0-1>, "category": "..."}]}"""
+
+WHOLE_PAPER_CHALLENGER_USER = """Manuscript title: {title}
+
+Full manuscript (may be truncated):
+---
+{manuscript}
+---
+
+Cross-section coherence candidates (JSON):
+{candidates_json}"""
+
 # --------------------------------------------------------------- challenger --
 
 CHALLENGER_SYSTEM = REFEREE_PERSONA + "\n\n" + SEVERITY_RUBRIC + """

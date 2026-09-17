@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Added — whole-paper review passes
+
+Two new passes ensure consistency *across* sections (single-section lenses
+cannot see cross-section drift):
+- **Cross-section coherence referee** (strong model, full manuscript) after
+  the section lenses: abstract/intro vs results overclaiming, contribution
+  vs delivery, numbers/notation drifting across sections, setup assumptions
+  honored in later analyses, results contradicting other results,
+  conclusion vs evidence, cross-section promises.
+- **Whole-paper challenger** (strong model, full manuscript) after the
+  section challengers: validates the coherence candidates (those not claimed
+  by any section challenger) and hunts missed global weaknesses
+  (overclaiming gap, silent assumption violations, the single change that
+  would most undermine the contribution).
+
 ### Changed — specialized referee prompts
 
 - All agents now share an explicit **referee persona** (severe, rigorous, fair

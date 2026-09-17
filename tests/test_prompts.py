@@ -3,7 +3,11 @@ prompt content guarantees."""
 
 from __future__ import annotations
 
-from open_referee.ingestion.readers import document_from_markdown
+import json
+
+from conftest import triage_json
+from open_referee.config import ModelRole
+from open_referee.ingestion.readers import document_from_markdown, ingest_document
 from open_referee.pipeline import prompts
 from open_referee.pipeline.orchestrator import ReviewPipeline, _extract_intext_citations
 
@@ -188,3 +192,138 @@ def test_validator_prompt_drops_unsubstantiated():
     p = prompts.VALIDATOR_SYSTEM
     assert "DROP" in p
     assert "fabricated" in p
+
+
+# ------------------------------------------------------- whole-paper passes --
+
+
+def test_whole_paper_verifier_prompt_scope():
+    p = prompts.WHOLE_PAPER_VERIFIER_SYSTEM
+    assert "ENTIRE manuscript" in p
+    # covers the cross-section dimensions the user asked about
+    for needle in [
+        "abstract",
+        "contribution",
+        "notation",
+        "results",
+        "conclusion",
+        "cross-section",
+    ]:
+        assert needle.lower() in p.lower(), needle
+    # persona + schema
+    assert "top academic journal" in p
+    assert "paragraph_anchor" in p
+
+
+def test_whole_paper_challenger_prompt_validates_and_hunts():
+    p = prompts.WHOLE_PAPER_CHALLENGER_SYSTEM
+    assert "validate" in p.lower()
+    assert "GLOBAL" in p
+    assert "overclaiming" in p
+    assert "verdict" in p
+
+
+async def test_whole_paper_passes_run_in_pipeline(
+    test_config, sample_paper_file, monkeypatch, tmp_path
+):
+    """Both whole-paper passes fire and their comments reach the candidate pool."""
+    import asyncio
+
+    import open_referee.config as cfg_mod
+
+    home = tmp_path / "home"
+    monkeypatch.setattr(cfg_mod, "DEFAULT_CONFIG_DIR", home)
+    monkeypatch.setattr(cfg_mod, "DEFAULT_CONFIG_PATH", home / "config.yaml")
+
+    async def _fake_lit(self, pool, doc, triage, queries, key_citations, lit_docs):
+        from open_referee.literature import ContextPack
+
+        return ContextPack(paper_title=doc.title, field_hint="t")
+
+    async def _fake_scout(self, pool, title, key_citations, pack):
+        return None
+
+    async def _fake_bib(self, pool, doc, pack):
+        return {"entries": [], "in_text_issues": [], "missing_key_references": []}
+
+    monkeypatch.setattr(ReviewPipeline, "_literature", _fake_lit)
+    monkeypatch.setattr(ReviewPipeline, "_scout", _fake_scout)
+    monkeypatch.setattr(ReviewPipeline, "_bibliography", _fake_bib)
+
+    pipeline = ReviewPipeline(test_config, run_id="wp01")
+    pool = await pipeline._ensure_pool()
+    strong = pool.providers[ModelRole.STRONG]
+    small = pool.providers[ModelRole.SMALL]
+
+    doc = await asyncio.to_thread(ingest_document, sample_paper_file)
+    sections = pipeline._reviewable_sections(doc)
+    triage = json.loads(triage_json())
+    n_verify = len(sections) * len(pipeline._lenses_for(triage))
+
+    strong.queue(triage_json())
+    small.queue(
+        json.dumps({"selected": [], "state_of_the_art_notes": "", "missing_references": []})
+    )
+    for _ in range(n_verify):
+        small.queue(json.dumps({"comments": []}))
+    strong.queue(
+        json.dumps(
+            {
+                "comments": [  # whole-paper verifier
+                    {
+                        "title": "WP: abstract overclaims",
+                        "paragraph_anchor": "We prove that all widgets are stable",
+                        "quote": "We prove that all widgets are stable",
+                        "message": "Abstract claims a proof the body never delivers.",
+                        "score": 0.7,
+                        "category": "consistency",
+                    }
+                ]
+            }
+        )
+    )
+    for _ in sections:
+        strong.queue(json.dumps({"validated": [], "new_comments": []}))
+    strong.queue(
+        json.dumps(
+            {  # whole-paper challenger
+                "validated": [
+                    {
+                        "title": "WP: abstract overclaims",
+                        "paragraph_anchor": "We prove that all widgets are stable",
+                        "quote": "We prove that all widgets are stable",
+                        "message": "Abstract claims a proof the body never delivers.",
+                        "score": 0.7,
+                        "category": "consistency",
+                        "verdict": "kept",
+                        "verdict_reason": "real",
+                    }
+                ],
+                "new_comments": [],
+            }
+        )
+    )
+    strong.queue(json.dumps({"paper_summary": "s", "overall_feedback": "## F", "comments": []}))
+    strong.queue(
+        json.dumps(
+            {
+                "comments": [
+                    {
+                        "title": "WP: abstract overclaims",
+                        "paragraph_anchor": "We prove that all widgets are stable",
+                        "quote": "We prove that all widgets are stable",
+                        "message": "m",
+                        "score": 0.7,
+                        "category": "consistency",
+                    }
+                ],
+                "overall_feedback": "## F",
+                "paper_summary": "s",
+                "validator_notes": "n",
+            }
+        )
+    )
+
+    report = await pipeline.run(sample_paper_file)
+    titles = [c.title for c in report.comments]
+    assert any(t.startswith("WP:") for t in titles), f"whole-paper comment missing: {titles}"

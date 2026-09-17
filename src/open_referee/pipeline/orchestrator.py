@@ -464,6 +464,24 @@ class ReviewPipeline:
         if ModelRole.VISION in pool.providers and doc.figures:
             fig_comments = await self._verify_figures(pool, doc)
             candidates.extend(fig_comments)
+
+        # whole-paper pass: cross-section coherence (strong model, full text)
+        try:
+            await self._emit(Stage.VERIFY, StageStatus.RUNNING, "whole-paper coherence pass")
+            wp_user = prompts.WHOLE_PAPER_VERIFIER_USER.format(
+                title=doc.title, manuscript=self._manuscript_trunc(doc)
+            )
+            wp = await pool.complete_json(
+                ModelRole.STRONG, prompts.WHOLE_PAPER_VERIFIER_SYSTEM, wp_user
+            )
+            candidates.extend(wp.get("comments", []))
+            await self._emit(
+                Stage.VERIFY,
+                StageStatus.RUNNING,
+                f"whole-paper pass: {len(wp.get('comments', []))} findings",
+            )
+        except LLMError as e:
+            logger.warning("whole-paper verifier failed: %s", e)
         return candidates
 
     async def _verify_figures(self, pool: RolePool, doc: Document) -> list[dict]:
@@ -524,6 +542,35 @@ class ReviewPipeline:
         results = await asyncio.gather(*tasks)
         for r in results:
             validated.extend(r)
+
+        # whole-paper challenge: validate cross-section candidates (those no
+        # section challenger claimed) and hunt missed global weaknesses
+        try:
+            claimed = {
+                _norm(c.get("paragraph_anchor", ""))[:120]
+                for r in results
+                for c in (r if isinstance(r, list) else [])
+                if isinstance(c, dict)
+            }
+            wp_candidates = [
+                c
+                for c in candidates
+                if isinstance(c, dict) and _norm(c.get("paragraph_anchor", ""))[:120] not in claimed
+            ]
+            await self._emit(Stage.CHALLENGE, StageStatus.RUNNING, "whole-paper challenge")
+            wp_user = prompts.WHOLE_PAPER_CHALLENGER_USER.format(
+                title=doc.title,
+                manuscript=self._manuscript_trunc(doc),
+                candidates_json=json.dumps(wp_candidates, indent=1)[:30_000],
+            )
+            wp = await pool.complete_json(
+                ModelRole.STRONG, prompts.WHOLE_PAPER_CHALLENGER_SYSTEM, wp_user
+            )
+            kept = [c for c in wp.get("validated", []) if c.get("verdict") != "dropped"]
+            validated.extend(kept + wp.get("new_comments", []))
+            await self._emit(Stage.CHALLENGE, StageStatus.RUNNING, "whole-paper challenge done")
+        except LLMError as e:
+            logger.warning("whole-paper challenger failed: %s", e)
         return validated
 
     async def _bibliography(self, pool, doc, pack) -> dict:

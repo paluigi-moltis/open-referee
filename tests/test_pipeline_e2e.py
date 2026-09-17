@@ -107,8 +107,12 @@ async def test_full_pipeline_e2e(test_config, sample_paper_file, monkeypatch, tm
     )
     for _ in range(n_verify):
         small.queue(_script_comments("lens"))
+    # whole-paper coherence pass (strong) happens AFTER section lenses
+    strong.queue(_script_comments("whole-paper"))
     for title, _ in sections:
         strong.queue(_script_challenge(title))
+    # whole-paper challenge (strong) happens AFTER section challengers
+    strong.queue(_script_challenge("whole-paper"))
     strong.queue(overall_json())
     strong.queue(validator_json())
 

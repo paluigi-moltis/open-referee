@@ -81,7 +81,8 @@ review:
 | Literature survey | small | builds the context pack (OpenAlex/Crossref/web + your PDFs) |
 | Community scout | small | PubPeer / OpenReview / PREreview signals |
 | Section verifiers | small + vision | specialized lenses per section: math/theory, statistics/econometrics, prose coherence, literature coherence (+ figures via vision) |
-| Challenger | strong | adversarial re-read; validates/adjusts/drops candidates |
+| Whole-paper verifiers | strong | cross-section coherence: abstract vs results, numbers/notation drift across sections, contradictions between results |
+| Challenger | strong | per-section adversarial re-read + whole-paper challenge: validates/adjusts/drops candidates, hunts missed global weaknesses |
 | Citation audit | small | reference existence + in-text quotation consistency, missing key work |
 | Meta-review | strong | dedupe, severity calibration, overall report |
 | **Review validator** | strong | final gate: quotes verified, severities recalibrated |

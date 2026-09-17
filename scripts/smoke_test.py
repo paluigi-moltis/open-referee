@@ -98,7 +98,16 @@ async def _patched(self):
                         "overall_feedback": "## Claim\n\nUnproven (validated).",
                         "paper_summary": "A smoke paper.",
                         "validator_notes": "checked"})
-    strong.queue(triage, challenge, challenge, overall, final)
+    wp_verify = json.dumps({"comments": [
+        {"title": "WP: intro overclaims", "paragraph_anchor": "Everything here is stable and true.",
+         "quote": "Everything here is stable and true.", "message": "Intro asserts what the body never establishes.",
+         "score": 0.6, "category": "consistency"}]})
+    wp_challenge = json.dumps({"validated": [
+        {"title": "WP: intro overclaims", "paragraph_anchor": "Everything here is stable and true.",
+         "quote": "Everything here is stable and true.", "message": "Intro asserts what the body never establishes.",
+         "score": 0.6, "category": "consistency", "verdict": "kept", "verdict_reason": "real"}],
+        "new_comments": []})
+    strong.queue(triage, challenge, challenge, wp_verify, wp_challenge, overall, final)
     small.queue(survey, section_comment, section_comment, bib)
     return pool
 
